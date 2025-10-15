@@ -37,8 +37,8 @@
         
         <div>
             <label>
-                <input type="checkbox" id="autoReset" checked />
-                Auto Reset
+                <input type="checkbox" id="manualBootloaderReset" />
+                Additional auto-reset (test)
             </label>
         </div>
         
@@ -56,6 +56,9 @@
         let espLoader = null;
         let transport = null;
         
+        const flashButton = document.getElementById('flashButton');
+        const connectButton = document.getElementById('connectButton');
+        
         document.getElementById('addressSelect').addEventListener('change', function() {
             const customDiv = document.getElementById('customAddressDiv');
             if (this.value === 'custom') {
@@ -65,8 +68,8 @@
             }
         });
         
-        document.getElementById('connectButton').addEventListener('click', connectESP32);
-        document.getElementById('flashButton').addEventListener('click', flashESP32);
+        connectButton.addEventListener('click', connectESP32);
+        flashButton.addEventListener('click', flashESP32);
         
         async function connectESP32() {
             try {
@@ -74,32 +77,58 @@
                 updateStatus('Connecting to ESP32...');
                 
                 const port = await navigator.serial.requestPort();
-                await port.open({ baudRate: 115200 });
                 
-                console.log('Serial opened');
-                
-                transport = new Transport(port, true);
+                transport = new Transport(port);
                 console.log('Transport created:', transport);
                 
-                espLoader = new ESPLoader(transport);
-                console.log('ESPLoader created:', espLoader);
+                // Manual off-library reset
+                const manualBootloaderReset = document.getElementById('manualBootloaderReset').checked;
+                if (manualBootloaderReset) {
+
+                    await transport.setDTR(false);  // GPIO0 low?
+                    await transport.setRTS(false);  // EN low?
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await transport.setRTS(true);   // EN high?
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    await transport.setDTR(true);   // GPIO0 high?
+                    
+                    console.log('After off-library reset');
+                }
+                
+                console.log('Creating ESPLoader:', transport);
+                const loaderOptions = {
+                    transport: transport,
+                    baudrate: 115200,
+                    debugLogging: true
+                };
+                espLoader = new ESPLoader(loaderOptions);
+                console.log('ESPLoader:', espLoader);
                 
                 console.log('Connecting...');
-                await espLoader.connect();
+                await espLoader.main(); // Probably does auto-reset as well
                 
                 console.log('Connected to ESP32');
                 updateStatus('Connected to ESP32');
                 
-                document.getElementById('flashButton').disabled = false;
-                document.getElementById('connectButton').disabled = true;
+                flashButton.disabled = false;
+                connectButton.disabled = true;
                 
             } catch (error) {
                 console.error('Connection failed:', error);
                 updateStatus('Connection failed: ' + error.message);
                 
-                document.getElementById('flashButton').disabled = true;
-                document.getElementById('connectButton').disabled = false;
+                flashButton.disabled = true;
+                connectButton.disabled = false;
             }
+        }
+        
+        function readFileData(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = (err) => reject(err);
+                reader.readAsBinaryString(file);
+            });
         }
         
         async function flashESP32() {
@@ -115,12 +144,14 @@
                 updateStatus('Select .bin file');
                 return;
             }
-            
+
+            flashButton.disabled = true;
+
             try {
                 console.log('Starting flashing...');
                 updateStatus('Starting flashing...');
                 
-                // Get address
+                // Address
                 let address;
                 const addressSelect = document.getElementById('addressSelect');
                 if (addressSelect.value === 'custom') {
@@ -136,38 +167,37 @@
                 
                 console.log('Flash address:', '0x' + address.toString(16));
                 
-                // Read file
-                const fileBuffer = await file.arrayBuffer();
-                const data = new Uint8Array(fileBuffer);
+                const fileData = await readFileData(file);
+                console.log('File size:', fileData.length, 'bytes');
                 
-                console.log('File size:', data.length, 'bytes');
+                const flashOptions = {
+                    fileArray: [{ data: fileData, address: address }],
+                    eraseAll: false,
+                    compress: true,
+                    reportProgress: (fileIndex, written, total) => {
+                        const progress = (written / total) * 100;
+                        updateStatus(`Flashing... ${Math.round(progress)}%`);
+                    }
+                };
                 
-                // flash
-                await espLoader.flashData(address, data);
+                updateStatus('Flashing...');
+                await espLoader.writeFlash(flashOptions);
                 
                 console.log('Flash completed successfully');
                 updateStatus('Flash completed successfully');
                 
-                // if Auto reset enabled
-                const autoReset = document.getElementById('autoReset').checked;
-                if (autoReset) {
-                    console.log('Resetting ESP32...');
-                    updateStatus('Resetting ESP32...');
-                    
-                    // Auto-reset
-                    await transport.setDTR(false);  // GPIO0 low?
-                    await transport.setRTS(false);  // EN low?
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                    await transport.setRTS(true);   // EN high?
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                    await transport.setDTR(true);   // GPIO0 high?
-                    
-                    updateStatus('ESP32 reset completed');
-                }
+                // Reset after flashing
+                console.log('Resetting ESP32...');
+                updateStatus('Resetting ESP32...');
+                await espLoader.after("hard_reset");
+                
+                updateStatus('Flash complete');
                 
             } catch (error) {
                 console.error('Flash failed:', error);
                 updateStatus('Flash failed: ' + error.message);
+            } finally {
+                flashButton.disabled = false;
             }
         }
         
