@@ -9,7 +9,7 @@
     <h1>ESP32 Web Flash Tool</h1>
     
     <div>
-        <h2>Flash ESP32</h2>
+        <h2>Flash</h2>
         
         <div>
             <label for="fileInput">Select .bin file:</label>
@@ -43,8 +43,8 @@
         </div>
         
         <div>
-            <button id="flashButton">Flash ESP32</button>
             <button id="connectButton">Connect</button>
+            <button id="flashButton" disabled>Flash</button>
         </div>
         
         <div id="status"></div>
@@ -56,7 +56,6 @@
         let espLoader = null;
         let transport = null;
         
-        // Show/hide custom address input
         document.getElementById('addressSelect').addEventListener('change', function() {
             const customDiv = document.getElementById('customAddressDiv');
             if (this.value === 'custom') {
@@ -66,7 +65,6 @@
             }
         });
         
-        // Add event listeners for buttons
         document.getElementById('connectButton').addEventListener('click', connectESP32);
         document.getElementById('flashButton').addEventListener('click', flashESP32);
         
@@ -75,40 +73,38 @@
                 console.log('Connecting to ESP32...');
                 updateStatus('Connecting to ESP32...');
                 
-                // Request serial port access
                 const port = await navigator.serial.requestPort();
                 await port.open({ baudRate: 115200 });
                 
-                console.log('Serial port opened, creating transport...');
+                console.log('Serial opened');
                 
-                // Create transport and loader
-                transport = new Transport(port);
+                transport = new Transport(port, true);
                 console.log('Transport created:', transport);
                 
                 espLoader = new ESPLoader(transport);
                 console.log('ESPLoader created:', espLoader);
                 
-                // Connect to ESP32
-                console.log('Attempting to connect...');
+                console.log('Connecting...');
                 await espLoader.connect();
                 
                 console.log('Connected to ESP32');
                 updateStatus('Connected to ESP32');
                 
+                document.getElementById('flashButton').disabled = false;
+                document.getElementById('connectButton').disabled = true;
+                
             } catch (error) {
                 console.error('Connection failed:', error);
-                console.error('Error details:', {
-                    name: error.name,
-                    message: error.message,
-                    stack: error.stack
-                });
                 updateStatus('Connection failed: ' + error.message);
+                
+                document.getElementById('flashButton').disabled = true;
+                document.getElementById('connectButton').disabled = false;
             }
         }
         
         async function flashESP32() {
             if (!espLoader) {
-                updateStatus('Please connect to ESP32 first');
+                updateStatus('No ESP32 connected');
                 return;
             }
             
@@ -116,13 +112,13 @@
             const file = fileInput.files[0];
             
             if (!file) {
-                updateStatus('Please select a .bin file');
+                updateStatus('Select .bin file');
                 return;
             }
             
             try {
-                console.log('Starting flash process...');
-                updateStatus('Starting flash process...');
+                console.log('Starting flashing...');
+                updateStatus('Starting flashing...');
                 
                 // Get address
                 let address;
@@ -146,18 +142,26 @@
                 
                 console.log('File size:', data.length, 'bytes');
                 
-                // Flash the data
+                // flash
                 await espLoader.flashData(address, data);
                 
                 console.log('Flash completed successfully');
                 updateStatus('Flash completed successfully');
                 
-                // Auto reset if enabled
+                // if Auto reset enabled
                 const autoReset = document.getElementById('autoReset').checked;
                 if (autoReset) {
                     console.log('Resetting ESP32...');
                     updateStatus('Resetting ESP32...');
-                    await espLoader.hardReset();
+                    
+                    // Auto-reset
+                    await transport.setDTR(false);  // GPIO0 low?
+                    await transport.setRTS(false);  // EN low?
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await transport.setRTS(true);   // EN high?
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    await transport.setDTR(true);   // GPIO0 high?
+                    
                     updateStatus('ESP32 reset completed');
                 }
                 
@@ -173,7 +177,6 @@
             console.log('Status:', message);
         }
         
-        // Check if Web Serial API is supported
         if (!navigator.serial) {
             updateStatus('Web Serial API not supported. Please use Chrome/Edge browser.');
         }
