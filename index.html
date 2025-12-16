@@ -49,6 +49,7 @@
         
         let espLoader = null;
         let transport = null;
+        let serialPort = null;
         
         const flashButton = document.getElementById('flashButton');
         const connectButton = document.getElementById('connectButton');
@@ -71,6 +72,7 @@
                 updateStatus('Connecting to ESP32...');
                 
                 const port = await navigator.serial.requestPort();
+                serialPort = port;
                 
                 transport = new Transport(port);
                 console.log('Transport created:', transport);
@@ -86,7 +88,22 @@
                 console.log('ESPLoader:', espLoader);
                 
                 console.log('Connecting...');
-                await espLoader.main(); // Does auto-reset automatically
+                try {
+                    await espLoader.main(); // Does auto-reset automatically
+                } catch (firstError) {
+                    // If connection fails, the board might have been reset into download mode
+                    // Wait a moment and retry
+                    console.log('First connection attempt failed, board may be entering download mode...');
+                    console.log('Error:', firstError);
+                    updateStatus('Board entering download mode, retrying connection...');
+                    
+                    // Wait for board to enter download mode
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // Retry connection
+                    console.log('Retrying connection...');
+                    await espLoader.main();
+                }
                 
                 console.log('Connected to ESP32');
                 updateStatus('Connected to ESP32');
@@ -154,7 +171,7 @@
                 const flashOptions = {
                     fileArray: [{ data: fileData, address: address }],
                     eraseAll: false,
-                    compress: true,
+                    compress: true, 
                     flashSize: "keep",
                     flashMode: "keep",
                     flashFreq: "keep",
@@ -173,9 +190,40 @@
                 // Reset after flashing
                 console.log('Resetting ESP32...');
                 updateStatus('Resetting ESP32...');
+                
+                // Use hard_reset to exit download mode and boot normally
                 await espLoader.after("hard_reset");
                 
-                updateStatus('Flash complete');
+                // Additional reset sequence to ensure board exits download mode
+                // Some boards need DTR/RTS to be toggled to properly exit download mode
+                if (serialPort && serialPort.setSignals) {
+                    try {
+                        // Ensure DTR and RTS are released (high) to boot normally
+                        await serialPort.setSignals({ 
+                            dataTerminalReady: true,
+                            requestToSend: true 
+                        });
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        
+                        // Brief pulse to ensure clean reset
+                        await serialPort.setSignals({ 
+                            dataTerminalReady: false,
+                            requestToSend: false 
+                        });
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        
+                        // Release to boot
+                        await serialPort.setSignals({ 
+                            dataTerminalReady: true,
+                            requestToSend: true 
+                        });
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    } catch (signalError) {
+                        console.log('Could not set signals directly, using default reset:', signalError);
+                    }
+                }
+                
+                updateStatus('Flash complete - Board reset');
                 
             } catch (error) {
                 console.error('Flash failed:', error);
